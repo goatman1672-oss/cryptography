@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Simple Video Call Test</title>
+    <style>
+        video { width: 45%; background: #222; margin: 10px; border-radius: 8px; }
+        body { font-family: sans-serif; text-align: center; background: #f4f4f9; }
+    </style>
+</head>
+<body>
+
+    <h2>Simple WebRTC Test Run</h2>
+    <video id="localVideo" autoplay playsinline muted></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+    <br>
+    <button id="startButton" onclick="startCall()">Start Call</button>
+
+    <script>
+        let localStream;
+        let peerConnection;
+        // Connect to our local Python signaling server
+        const socket = new WebSocket('ws://localhost:8765');
+
+        // Free public STUN server configuration to handle local/public IP routing discoverability
+        const config = {
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        };
+
+        // 1. Get access to camera and microphone
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+            .then(stream => {
+                localStream = stream;
+                document.getElementById('localVideo').srcObject = stream;
+            }).catch(err => console.error("Media access denied:", err));
+
+        // 2. Handle signaling messages coming from Python backend
+        socket.onmessage = async (message) => {
+            const data = JSON.parse(message.data);
+            
+            if (data.offer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                socket.send(JSON.stringify({ answer }));
+            } else if (data.answer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+            } else if (data.candidate) {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            }
+        };
+
+        // 3. Initiate the call process
+        async function startCall() {
+            peerConnection = new RTCPeerConnection(config);
+            
+            // Add local video/audio tracks to connection
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+            // Display remote stream when it arrives
+            peerConnection.ontrack = (event) => {
+                document.getElementById('remoteVideo').srcObject = event.streams[0];
+            };
+
+            // Send discovered network paths (ICE Candidates) to the python server
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.send(JSON.stringify({ candidate: event.candidate }));
+                }
+            };
+
+            // Create connection offer
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            socket.send(JSON.stringify({ offer }));
+        }
+    </script>
+</body>
+</html>
